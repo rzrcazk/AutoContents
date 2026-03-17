@@ -24,10 +24,10 @@ export const configAPI = {
 // 资讯
 export const newsAPI = {
   list: (params) => api.get('/news', { params }),
-  grouped: () => api.get('/news/grouped'),
+  grouped: (params) => api.get('/news/grouped', { params }),
   raw: () => api.get('/news/raw'),
   saved: () => api.get('/news/saved'),
-  fetch: (source_id) => api.post('/news/fetch', source_id ? { source_id } : {}),
+  fetch: (source_id, days) => api.post('/news/fetch', source_id ? { source_id, days } : { days }),
   hide: (id) => api.post(`/news/${id}/hide`),
   save: (id) => api.post(`/news/${id}/save`),
   unsave: (id) => api.post(`/news/${id}/unsave`),

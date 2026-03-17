@@ -44,16 +44,75 @@ router.get('/', async (req, res) => {
 router.get('/grouped', async (req, res) => {
   try {
     const isAgent = req.query.agent === '1';
-    const sources = await db.prepare('SELECT * FROM sources WHERE enabled = 1 ORDER BY id').all();
+
+    // 解析信源筛选参数（支持多选）
+    let sourceIds = [];
+    if (req.query.source_ids) {
+      try {
+        sourceIds = JSON.parse(req.query.source_ids);
+        if (!Array.isArray(sourceIds)) {
+          sourceIds = [sourceIds];
+        }
+      } catch {
+        // 如果不是JSON数组，尝试按逗号分隔
+        sourceIds = req.query.source_ids.split(',').map(id => id.trim()).filter(Boolean);
+      }
+    }
+
+    // 解析时间范围参数
+    let startDate = req.query.start_date;
+    let endDate = req.query.end_date;
+
+    // 如果没有提供时间范围，默认使用最近30天
+    if (!startDate && !endDate) {
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      startDate = thirtyDaysAgo.toISOString();
+    }
+
+    // 构建查询条件
+    let sourceFilter = '';
+    let dateFilter = '';
+    const queryParams = [];
+
+    if (sourceIds.length > 0) {
+      const placeholders = sourceIds.map(() => '?').join(',');
+      sourceFilter = `AND id IN (${placeholders})`;
+      queryParams.push(...sourceIds);
+    }
+
+    const sources = await db.prepare(`
+      SELECT * FROM sources
+      WHERE enabled = 1 ${sourceFilter}
+      ORDER BY id
+    `).all(...queryParams);
+
     const result = [];
     for (const source of sources) {
-      const extraFilter = isAgent ? 'AND ai_newsed = 0' : '';
+      const newsParams = [source.id];
+      let newsFilter = '';
+
+      if (isAgent) {
+        newsFilter += ' AND ai_newsed = 0';
+      }
+
+      if (startDate) {
+        newsFilter += ' AND pub_date >= ?';
+        newsParams.push(startDate);
+      }
+
+      if (endDate) {
+        newsFilter += ' AND pub_date <= ?';
+        newsParams.push(endDate);
+      }
+
       const items = await db.prepare(`
         SELECT * FROM news
-        WHERE source_id = ? AND hidden = 0 ${extraFilter}
+        WHERE source_id = ? AND hidden = 0 ${newsFilter}
         ORDER BY pub_date DESC, fetched_at DESC
-        LIMIT 30
-      `).all(source.id);
+        LIMIT 50
+      `).all(...newsParams);
+
       result.push({ source, items });
     }
     res.json({ success: true, data: result });
@@ -151,13 +210,13 @@ router.get('/agent-summary', async (req, res) => {
 
 // 拉取资讯（全部或指定信源）
 router.post('/fetch', async (req, res) => {
-  const { source_id } = req.body;
+  const { source_id, days } = req.body;
   try {
     let results;
     if (source_id) {
       const source = await db.prepare('SELECT * FROM sources WHERE id = ?').get(source_id);
       if (!source) return res.status(404).json({ success: false, error: '信源不存在' });
-      const r = await fetchAndUpdateSource(source);
+      const r = await fetchAndUpdateSource(source, days);
       results = [r];
     } else {
       results = await fetchAllSources();

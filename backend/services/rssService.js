@@ -41,7 +41,7 @@ function stripHtml(html) {
     .trim();
 }
 
-async function fetchSource(source) {
+async function fetchSource(source, days = null) {
   let url;
   if (source.type === 'rsshub') {
     const limitParam = source.limit_count ? `?limit=${source.limit_count}` : '';
@@ -51,7 +51,23 @@ async function fetchSource(source) {
   }
 
   const feed = await parser.parseURL(url);
-  return feed.items || [];
+  let items = feed.items || [];
+
+  // 如果指定了天数，过滤掉超过该天数的资讯
+  if (days && days > 0) {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+    cutoffDate.setHours(0, 0, 0, 0);
+
+    items = items.filter(item => {
+      const pubDate = item.pubDate || item.isoDate;
+      if (!pubDate) return true; // 如果没有发布时间，保留该条
+      const itemDate = new Date(pubDate);
+      return itemDate >= cutoffDate;
+    });
+  }
+
+  return items;
 }
 
 async function processAndSaveItems(source, items) {
@@ -123,9 +139,9 @@ async function translateNewsForSource(sourceId) {
   }
 }
 
-async function fetchAndUpdateSource(source) {
+async function fetchAndUpdateSource(source, days = null) {
   try {
-    const items = await fetchSource(source);
+    const items = await fetchSource(source, days);
     const count = await processAndSaveItems(source, items);
     console.log(`[${source.name}] 新增 ${count} 条资讯`);
 

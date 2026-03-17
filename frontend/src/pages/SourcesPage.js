@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { sourcesAPI } from '../services/api';
+import { sourcesAPI, newsAPI } from '../services/api';
 import { useToast } from '../components/Toast';
 import './SourcesPage.css';
 
@@ -25,6 +25,7 @@ function SourceRow({ source, onUpdate, onDelete }) {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({ ...source });
   const [saving, setSaving] = useState(false);
+  const [fetching, setFetching] = useState(false);
   const toast = useToast();
 
   const handleSave = async () => {
@@ -42,6 +43,26 @@ function SourceRow({ source, onUpdate, onDelete }) {
       await onUpdate(source.id, { ...source, enabled: val });
     } catch (e) {
       toast.error('更新失败');
+    }
+  };
+
+  const handleFetch = async () => {
+    if (fetching) return;
+    setFetching(true);
+    try {
+      const resp = await newsAPI.fetch(source.id, 7);
+      if (resp.data.success) {
+        const result = resp.data.data[0];
+        if (result.error) {
+          toast.error(`${source.name} 拉取失败: ${result.error}`);
+        } else {
+          toast.success(`${source.name} 拉取完成，新增 ${result.newCount ?? 0} 条资讯`);
+        }
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.error || '拉取失败');
+    } finally {
+      setFetching(false);
     }
   };
 
@@ -104,7 +125,23 @@ function SourceRow({ source, onUpdate, onDelete }) {
 
   return (
     <tr className="source-row">
-      <td className="source-name-cell">{source.name}</td>
+      <td className="source-name-cell">
+        <div className="source-name-with-action">
+          <span className="source-name-text">{source.name}</span>
+          <button
+            className="btn btn-primary btn-xs fetch-btn"
+            onClick={handleFetch}
+            disabled={fetching}
+            title="拉取该信源最近7天资讯"
+          >
+            {fetching ? (
+              <span className="spinner" style={{ width: 12, height: 12 }} />
+            ) : (
+              '↻ 拉取'
+            )}
+          </button>
+        </div>
+      </td>
       <td>
         <span className={`badge ${source.type === 'rsshub' ? 'badge-success' : 'badge-warning'}`}>
           {source.type.toUpperCase()}

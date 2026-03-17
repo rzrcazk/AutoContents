@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { newsAPI } from '../services/api';
+import { newsAPI, sourcesAPI } from '../services/api';
 import { useToast } from '../components/Toast';
 import './HomePage.css';
 
@@ -169,14 +169,60 @@ export default function HomePage() {
   const [fetching, setFetching] = useState(false);
   const [loading, setLoading] = useState(true);
   const [fetchResults, setFetchResults] = useState(null);
+  const [sources, setSources] = useState([]);
+
+  // 筛选状态
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [selectedSourceIds, setSelectedSourceIds] = useState([]);
+  const [showFilters, setShowFilters] = useState(false);
+
   const toast = useToast();
   const navigate = useNavigate();
 
+  // 获取信源列表
+  const loadSources = useCallback(async () => {
+    try {
+      const resp = await sourcesAPI.list();
+      if (resp.data.success) {
+        setSources(resp.data.data.filter(s => s.enabled));
+      }
+    } catch (e) {
+      console.error('加载信源失败:', e);
+    }
+  }, []);
+
   const toastError = toast.error;
+
+  // 计算默认开始日期（30天前）
+  const getDefaultStartDate = () => {
+    const date = new Date();
+    date.setDate(date.getDate() - 30);
+    return date.toISOString().split('T')[0];
+  };
+
   const loadNews = useCallback(async () => {
     setLoading(true);
     try {
-      const resp = await newsAPI.grouped();
+      const params = {};
+
+      // 添加信源筛选
+      if (selectedSourceIds.length > 0) {
+        params.source_ids = JSON.stringify(selectedSourceIds);
+      }
+
+      // 添加时间筛选
+      if (startDate) {
+        params.start_date = new Date(startDate).toISOString();
+      }
+      if (endDate) {
+        // 结束日期设置为当天的23:59:59
+        const endDateTime = new Date(endDate);
+        endDateTime.setHours(23, 59, 59, 999);
+        params.end_date = endDateTime.toISOString();
+      }
+
+      const resp = await newsAPI.grouped(params);
       if (resp.data.success) {
         setGroupedNews(resp.data.data);
       }
@@ -185,7 +231,13 @@ export default function HomePage() {
     } finally {
       setLoading(false);
     }
-  }, [toastError]);
+  }, [toastError, selectedSourceIds, startDate, endDate]);
+
+  useEffect(() => {
+    loadSources();
+    // 设置默认开始日期为30天前
+    setStartDate(getDefaultStartDate());
+  }, [loadSources]);
 
   useEffect(() => {
     loadNews();
@@ -206,6 +258,24 @@ export default function HomePage() {
     } finally {
       setFetching(false);
     }
+  };
+
+  const handleSourceToggle = (sourceId) => {
+    setSelectedSourceIds(prev =>
+      prev.includes(sourceId)
+        ? prev.filter(id => id !== sourceId)
+        : [...prev, sourceId]
+    );
+  };
+
+  const handleSelectAllSources = () => {
+    setSelectedSourceIds([]);
+  };
+
+  const handleClearFilters = () => {
+    setStartDate(getDefaultStartDate());
+    setEndDate('');
+    setSelectedSourceIds([]);
   };
 
   const handleHide = async (newsId) => {
@@ -253,6 +323,24 @@ export default function HomePage() {
 
   const totalCount = groupedNews.reduce((sum, sg) => sum + sg.items.length, 0);
 
+  // 格式化日期显示
+  const formatDateLabel = () => {
+    if (!startDate && !endDate) return '全部时间';
+    if (startDate && !endDate) return `${startDate} 至今`;
+    if (!startDate && endDate) return `${endDate} 之前`;
+    return `${startDate} 至 ${endDate}`;
+  };
+
+  // 格式化信源显示
+  const formatSourceLabel = () => {
+    if (selectedSourceIds.length === 0) return '所有信源';
+    if (selectedSourceIds.length === 1) {
+      const source = sources.find(s => s.id === selectedSourceIds[0]);
+      return source ? source.name : '1个信源';
+    }
+    return `${selectedSourceIds.length}个信源`;
+  };
+
   return (
     <div className="home-page page-container">
       <div className="page-header">
@@ -287,6 +375,97 @@ export default function HomePage() {
         </div>
       </div>
 
+      {/* 筛选栏 */}
+      <div className="filter-bar">
+        <div className="filter-row">
+          {/* 时间筛选 */}
+          <div className="filter-group">
+            <label className="filter-label">时间范围</label>
+            <div className="filter-inputs">
+              <input
+                type="date"
+                className="filter-date-input"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                placeholder="开始日期"
+              />
+              <span className="filter-separator">至</span>
+              <input
+                type="date"
+                className="filter-date-input"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                placeholder="结束日期"
+              />
+            </div>
+          </div>
+
+          {/* 信源筛选 */}
+          <div className="filter-group">
+            <label className="filter-label">信源</label>
+            <div className="filter-source-select">
+              <div className="source-dropdown-trigger" onClick={() => setShowFilters(!showFilters)}>
+                <span className="source-dropdown-text">{formatSourceLabel()}</span>
+                <span className="expand-icon">{showFilters ? '▲' : '▼'}</span>
+              </div>
+              {showFilters && (
+                <div className="source-dropdown-menu">
+                  <div className="source-dropdown-item" onClick={handleSelectAllSources}>
+                    <input
+                      type="checkbox"
+                      checked={selectedSourceIds.length === 0}
+                      readOnly
+                      className="source-checkbox"
+                    />
+                    <span className="source-name">所有信源</span>
+                  </div>
+                  {sources.map(source => (
+                    <div
+                      key={source.id}
+                      className="source-dropdown-item"
+                      onClick={() => handleSourceToggle(source.id)}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedSourceIds.includes(source.id)}
+                        readOnly
+                        className="source-checkbox"
+                      />
+                      <span className="source-name">{source.name}</span>
+                      <span className={`badge ${source.type === 'rsshub' ? 'badge-success' : 'badge-warning'}`}>
+                        {source.type.toUpperCase()}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* 筛选操作 */}
+          <div className="filter-actions">
+            <button className="btn btn-ghost btn-sm" onClick={handleClearFilters}>
+              重置
+            </button>
+          </div>
+        </div>
+
+        {/* 当前筛选标签 */}
+        {(startDate || endDate || selectedSourceIds.length > 0) && (
+          <div className="filter-tags">
+            <span className="filter-tag-label">当前筛选：</span>
+            <span className="filter-tag">
+              时间: {formatDateLabel()}
+            </span>
+            {selectedSourceIds.length > 0 && (
+              <span className="filter-tag">
+                信源: {formatSourceLabel()}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+
       {loading ? (
         <div className="loading-state">
           <span className="spinner" />
@@ -295,7 +474,7 @@ export default function HomePage() {
       ) : groupedNews.length === 0 ? (
         <div className="empty-state">
           <div className="empty-state-icon">📰</div>
-          <div className="empty-state-text">暂无启用的信源，请先在「信源管理」中配置信源</div>
+          <div className="empty-state-text">暂无符合条件的资讯</div>
         </div>
       ) : (
         <div className="sources-grid">
