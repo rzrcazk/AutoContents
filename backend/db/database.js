@@ -227,6 +227,9 @@ if (DB_DRIVER === 'postgres') {
 
 // 辅助函数：转换参数为 PostgreSQL 格式
 function convertParams(params) {
+  if (!params) {
+    return [];
+  }
   if (!Array.isArray(params)) {
     params = [params];
   }
