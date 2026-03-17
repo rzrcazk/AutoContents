@@ -21,7 +21,6 @@ function containsBlacklisted(text, blacklist) {
   return blacklist.some((kw) => text.includes(kw));
 }
 
-// 正向关键词：列表为空时返回 true（不过滤），有内容时至少命中一个才返回 true
 function passesAllowlist(text, allowlist) {
   if (allowlist.length === 0) return true;
   if (!text) return false;
@@ -56,20 +55,9 @@ async function fetchSource(source) {
 }
 
 async function processAndSaveItems(source, items) {
-  const blacklist = getBlacklist();
-  const allowlist = getAllowlist();
-  const allowlistScope = getAllowlistScope();
-  const insertStmt = db.prepare(`
-    INSERT OR IGNORE INTO news 
-    (source_id, guid, title, description, link, pub_date)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
-
-  const insertMany = db.transaction((rows) => {
-    for (const row of rows) {
-      insertStmt.run(row.source_id, row.guid, row.title, row.description, row.link, row.pub_date);
-    }
-  });
+  const blacklist = await getBlacklist();
+  const allowlist = await getAllowlist();
+  const allowlistScope = await getAllowlistScope();
 
   const rows = [];
   for (const item of items) {
@@ -80,12 +68,10 @@ async function processAndSaveItems(source, items) {
     const guid = item.guid || item.link || `${source.id}-${item.title}-${Date.now()}`;
     const pubDate = item.pubDate || item.isoDate || new Date().toISOString();
 
-    // 黑名单过滤
     if (containsBlacklisted(title + ' ' + description, blacklist)) {
       continue;
     }
 
-    // 正向关键词筛选（列表为空时放行全部）
     const allowlistText = allowlistScope === 'title' ? title : title + ' ' + description;
     if (!passesAllowlist(allowlistText, allowlist)) {
       continue;
@@ -101,22 +87,25 @@ async function processAndSaveItems(source, items) {
     });
   }
 
-  insertMany(rows);
+  // 批量插入
+  for (const row of rows) {
+    await db.prepare(`
+      INSERT OR IGNORE INTO news
+      (source_id, guid, title, description, link, pub_date)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(row.source_id, row.guid, row.title, row.description, row.link, row.pub_date);
+  }
+
   return rows.length;
 }
 
 async function translateNewsForSource(sourceId) {
-  // 找出该信源下未翻译的新闻
-  const untranslated = db.prepare(`
-    SELECT id, title, description FROM news 
-    WHERE source_id = ? AND hidden = 0 
+  const untranslated = await db.prepare(`
+    SELECT id, title, description FROM news
+    WHERE source_id = ? AND hidden = 0
     AND (translated_title IS NULL OR translated_title = '')
     ORDER BY fetched_at DESC LIMIT 50
   `).all(sourceId);
-
-  const updateStmt = db.prepare(`
-    UPDATE news SET translated_title = ?, translated_description = ? WHERE id = ?
-  `);
 
   for (const item of untranslated) {
     try {
@@ -124,11 +113,12 @@ async function translateNewsForSource(sourceId) {
         translate(item.title),
         translate(item.description),
       ]);
-      updateStmt.run(transTitle, transDesc, item.id);
+      await db.prepare(`
+        UPDATE news SET translated_title = ?, translated_description = ? WHERE id = ?
+      `).run(transTitle, transDesc, item.id);
     } catch (err) {
       console.error(`翻译新闻 ${item.id} 失败:`, err.message);
     }
-    // 避免过快调用
     await new Promise((r) => setTimeout(r, 500));
   }
 }
@@ -139,7 +129,6 @@ async function fetchAndUpdateSource(source) {
     const count = await processAndSaveItems(source, items);
     console.log(`[${source.name}] 新增 ${count} 条资讯`);
 
-    // 如果开启翻译，异步翻译（不阻塞响应）
     if (source.translate) {
       translateNewsForSource(source.id).catch((e) =>
         console.error(`翻译信源 ${source.name} 失败:`, e.message)
@@ -154,7 +143,7 @@ async function fetchAndUpdateSource(source) {
 }
 
 async function fetchAllSources() {
-  const sources = db.prepare('SELECT * FROM sources WHERE enabled = 1').all();
+  const sources = await db.prepare('SELECT * FROM sources WHERE enabled = 1').all();
   const results = await Promise.allSettled(sources.map((s) => fetchAndUpdateSource(s)));
   return results.map((r, i) => ({
     source: sources[i].name,

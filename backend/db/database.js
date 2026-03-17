@@ -1,105 +1,256 @@
-const Database = require('better-sqlite3');
+/**
+ * 统一数据库入口
+ * 根据 DB_DRIVER 环境变量自动选择 SQLite 或 PostgreSQL
+ * 默认为 SQLite，设置 DB_DRIVER=postgres 启用 PostgreSQL
+ */
+
 const path = require('path');
 const fs = require('fs');
 
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, '../data/app.db');
+const DB_DRIVER = process.env.DB_DRIVER || 'sqlite';
 
-// 确保数据目录存在
-const dataDir = path.dirname(DB_PATH);
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
-}
+let db;
 
-const db = new Database(DB_PATH);
+if (DB_DRIVER === 'postgres') {
+  // 使用 PostgreSQL
+  console.log('[DB] 使用 PostgreSQL 数据库');
+  const pgDb = require('./pg-database');
 
-// 开启 WAL 模式提升性能
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+  // 包装为同步风格的 API（适配现有代码）
+  db = {
+    // 原始 pool（用于高级查询）
+    pool: pgDb.pool,
 
-// 初始化表结构
-db.exec(`
-  CREATE TABLE IF NOT EXISTS sources (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    type TEXT NOT NULL CHECK(type IN ('rsshub', 'rss')),
-    route TEXT NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    limit_count INTEGER NOT NULL DEFAULT 20,
-    translate INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
+    // 异步查询方法
+    prepare: (sql) => {
+      // 转换 SQLite 参数占位符 ? 为 PostgreSQL $1, $2...
+      let pgSql = sql;
+      let paramIndex = 0;
+      pgSql = pgSql.replace(/\?/g, () => `$${++paramIndex}`);
 
-  CREATE TABLE IF NOT EXISTS news (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_id INTEGER NOT NULL,
-    guid TEXT NOT NULL UNIQUE,
-    title TEXT,
-    description TEXT,
-    translated_title TEXT,
-    translated_description TEXT,
-    link TEXT,
-    pub_date TEXT,
-    hidden INTEGER NOT NULL DEFAULT 0,
-    ai_newsed INTEGER NOT NULL DEFAULT 0,
-    saved INTEGER NOT NULL DEFAULT 0,
-    saved_at TEXT,
-    fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
-  );
+      // 转换 SQLite 函数为 PostgreSQL
+      pgSql = pgSql.replace(/datetime\('now'\)/gi, 'CURRENT_TIMESTAMP');
+      pgSql = pgSql.replace(/INTEGER PRIMARY KEY AUTOINCREMENT/gi, 'SERIAL PRIMARY KEY');
 
-  CREATE TABLE IF NOT EXISTS saved_contents (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    news_id INTEGER,
-    title TEXT,
-    content TEXT,
-    cover_url TEXT,
-    detail_urls TEXT,
-    tags TEXT,
-    source_url TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
+      return {
+        all: async (params) => {
+          try {
+            // 转换布尔值参数为 PostgreSQL 格式
+            const convertedParams = convertParams(params);
+            const rows = await pgDb.all(pgSql, convertedParams);
+            // 转换 PostgreSQL 布尔值为 JavaScript 布尔值
+            return rows.map(row => convertFromPostgres(row));
+          } catch (err) {
+            console.error('PostgreSQL 查询错误:', err);
+            throw err;
+          }
+        },
+        get: async (params) => {
+          try {
+            const convertedParams = convertParams(params);
+            const row = await pgDb.get(pgSql, convertedParams);
+            return row ? convertFromPostgres(row) : null;
+          } catch (err) {
+            console.error('PostgreSQL 查询错误:', err);
+            throw err;
+          }
+        },
+        run: async (params) => {
+          try {
+            // 转换 INSERT OR REPLACE 为 INSERT ... ON CONFLICT
+            let runSql = pgSql;
+            if (runSql.includes('INSERT OR REPLACE INTO')) {
+              runSql = runSql.replace('INSERT OR REPLACE INTO', 'INSERT INTO');
+              runSql = runSql.replace(/ON CONFLICT.*DO UPDATE SET.*$/i, '');
+              runSql = runSql.trim() + ' ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value';
+            }
+            // 添加 RETURNING id 支持获取 lastInsertRowid
+            if (runSql.includes('INSERT INTO') && !runSql.includes('RETURNING')) {
+              runSql += ' RETURNING id';
+            }
+            const convertedParams = convertParams(params);
+            const result = await pgDb.run(runSql, convertedParams);
+            return {
+              lastInsertRowid: result.lastInsertRowid,
+              changes: result.rowCount,
+            };
+          } catch (err) {
+            console.error('PostgreSQL 执行错误:', err);
+            throw err;
+          }
+        },
+      };
+    },
 
-  CREATE TABLE IF NOT EXISTS config (
-    key TEXT PRIMARY KEY,
-    value TEXT
-  );
+    // 执行多条 SQL
+    exec: async (sql) => {
+      try {
+        await pgDb.exec(sql);
+      } catch (err) {
+        console.error('PostgreSQL exec 错误:', err);
+        throw err;
+      }
+    },
 
-  CREATE TABLE IF NOT EXISTS feishu_daily_docs (
-    date TEXT PRIMARY KEY,
-    node_token TEXT NOT NULL,
-    obj_token TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
+    // 事务支持
+    transaction: (fn) => {
+      return async () => {
+        const client = await pgDb.beginTransaction();
+        try {
+          const tx = {
+            run: (sql, params) => pgDb.txRun(client, sql, params),
+            get: (sql, params) => pgDb.txGet(client, sql, params),
+            all: (sql, params) => pgDb.txAll(client, sql, params),
+          };
+          const result = await fn(tx);
+          await pgDb.commitTransaction(client);
+          return result;
+        } catch (err) {
+          await pgDb.rollbackTransaction(client);
+          throw err;
+        }
+      };
+    },
 
-  CREATE INDEX IF NOT EXISTS idx_news_source_id ON news(source_id);
-  CREATE INDEX IF NOT EXISTS idx_news_hidden ON news(hidden);
-  CREATE INDEX IF NOT EXISTS idx_news_fetched_at ON news(fetched_at);
-`);
+    // 初始化
+    init: async () => {
+      await pgDb.initDatabase();
+    },
+  };
+} else {
+  // 使用 SQLite（默认）
+  console.log('[DB] 使用 SQLite 数据库');
+  const Database = require('better-sqlite3');
 
-// 迁移：为已存在的数据库添加新列（忽略已存在的错误）
-const migrations = [
-  "ALTER TABLE news ADD COLUMN saved INTEGER NOT NULL DEFAULT 0",
-  "ALTER TABLE news ADD COLUMN saved_at TEXT",
-  "ALTER TABLE news ADD COLUMN push_type TEXT",
-  "ALTER TABLE saved_contents ADD COLUMN news_id INTEGER",
-  "ALTER TABLE saved_contents ADD COLUMN tags TEXT",
-  "ALTER TABLE saved_contents ADD COLUMN source_url TEXT",
-];
-for (const sql of migrations) {
-  try { db.exec(sql); } catch (_) { /* 列已存在则忽略 */ }
-}
+  const DB_PATH = process.env.DB_PATH || path.join(__dirname, '../data/app.db');
 
-// 插入默认示例信源（仅首次）
-const sourceCount = db.prepare('SELECT COUNT(*) as cnt FROM sources').get();
-if (sourceCount.cnt === 0) {
-  const insertSource = db.prepare(`
-    INSERT INTO sources (name, type, route, enabled, limit_count, translate)
-    VALUES (?, ?, ?, ?, ?, ?)
+  // 确保数据目录存在
+  const dataDir = path.dirname(DB_PATH);
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+
+  const sqliteDb = new Database(DB_PATH);
+
+  // 开启 WAL 模式提升性能
+  sqliteDb.pragma('journal_mode = WAL');
+  sqliteDb.pragma('foreign_keys = ON');
+
+  // 初始化表结构
+  sqliteDb.exec(`
+    CREATE TABLE IF NOT EXISTS sources (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('rsshub', 'rss')),
+      route TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      limit_count INTEGER NOT NULL DEFAULT 20,
+      translate INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS news (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_id INTEGER NOT NULL,
+      guid TEXT NOT NULL UNIQUE,
+      title TEXT,
+      description TEXT,
+      translated_title TEXT,
+      translated_description TEXT,
+      link TEXT,
+      pub_date TEXT,
+      hidden INTEGER NOT NULL DEFAULT 0,
+      ai_newsed INTEGER NOT NULL DEFAULT 0,
+      saved INTEGER NOT NULL DEFAULT 0,
+      saved_at TEXT,
+      fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS saved_contents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      news_id INTEGER,
+      title TEXT,
+      content TEXT,
+      cover_url TEXT,
+      detail_urls TEXT,
+      tags TEXT,
+      source_url TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS config (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS feishu_daily_docs (
+      date TEXT PRIMARY KEY,
+      node_token TEXT NOT NULL,
+      obj_token TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_news_source_id ON news(source_id);
+    CREATE INDEX IF NOT EXISTS idx_news_hidden ON news(hidden);
+    CREATE INDEX IF NOT EXISTS idx_news_fetched_at ON news(fetched_at);
   `);
-  insertSource.run('36kr快讯', 'rsshub', '/36kr/newsflashes', 1, 20, 0);
-  insertSource.run('HackerNews', 'rsshub', '/hackernews', 1, 20, 1);
-  insertSource.run('ProductHunt', 'rss', 'https://decohack.com/feed/', 1, 20, 1);
+
+  // 迁移：为已存在的数据库添加新列
+  const migrations = [
+    "ALTER TABLE news ADD COLUMN saved INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE news ADD COLUMN saved_at TEXT",
+    "ALTER TABLE news ADD COLUMN push_type TEXT",
+    "ALTER TABLE saved_contents ADD COLUMN news_id INTEGER",
+    "ALTER TABLE saved_contents ADD COLUMN tags TEXT",
+    "ALTER TABLE saved_contents ADD COLUMN source_url TEXT",
+  ];
+  for (const sql of migrations) {
+    try { sqliteDb.exec(sql); } catch (_) { /* 列已存在则忽略 */ }
+  }
+
+  // 插入默认示例信源
+  const sourceCount = sqliteDb.prepare('SELECT COUNT(*) as cnt FROM sources').get();
+  if (sourceCount.cnt === 0) {
+    const insertSource = sqliteDb.prepare(`
+      INSERT INTO sources (name, type, route, enabled, limit_count, translate)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    insertSource.run('36kr快讯', 'rsshub', '/36kr/newsflashes', 1, 20, 0);
+    insertSource.run('HackerNews', 'rsshub', '/hackernews', 1, 20, 1);
+    insertSource.run('ProductHunt', 'rss', 'https://decohack.com/feed/', 1, 20, 1);
+  }
+
+  db = sqliteDb;
+}
+
+// 辅助函数：转换参数为 PostgreSQL 格式
+function convertParams(params) {
+  if (!Array.isArray(params)) {
+    params = [params];
+  }
+  return params.map(p => {
+    // 将 JavaScript 布尔值转换为 PostgreSQL 格式
+    if (typeof p === 'boolean') {
+      return p;
+    }
+    return p;
+  });
+}
+
+// 辅助函数：从 PostgreSQL 结果转换
+function convertFromPostgres(row) {
+  if (!row) return row;
+  const result = { ...row };
+  // 转换常见布尔字段
+  const booleanFields = ['enabled', 'translate', 'hidden', 'ai_newsed', 'saved'];
+  for (const field of booleanFields) {
+    if (field in result) {
+      result[field] = Boolean(result[field]);
+    }
+  }
+  return result;
 }
 
 module.exports = db;
