@@ -16,8 +16,17 @@
 ### 拉取最新资讯
 ```
 POST /news/fetch
-Body: {} （全部信源）
 ```
+
+**请求体（全部可选）：**
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `source_id` | number | 指定单个信源 ID，不传则拉取全部启用信源 |
+| `days` | number | 仅拉取最近 N 天内的资讯，不传则拉取信源默认范围 |
+
+示例：`{}` 拉取全部；`{"source_id": 3, "days": 7}` 仅拉取信源 3 最近 7 天。
+
 响应：每个信源的拉取结果，含新增条数。
 
 ### 获取资讯列表（分组）
@@ -26,6 +35,16 @@ GET /news/grouped          # 人工模式：显示所有未隐藏资讯（含已
 GET /news/grouped?agent=1  # Agent 模式：额外过滤掉已推送(ai_newsed=1)的条目，避免重复处理
 ```
 响应：按信源分组的资讯列表（hidden=0）。Agent 调用时**必须加 `?agent=1`**。
+
+**可选过滤参数：**
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `start_date` | ISO 8601 字符串 | 资讯发布时间下限，例如 `2026-03-01T00:00:00.000Z` |
+| `end_date` | ISO 8601 字符串 | 资讯发布时间上限 |
+| `source_ids` | 逗号分隔字符串或 JSON 数组 | 指定信源 ID，例如 `1,2,3` 或 `[1,2,3]` |
+
+> 若不传 `start_date` 和 `end_date`，默认返回最近 **30 天**内的资讯。
 
 ### 获取 Agent 学习摘要
 ```
@@ -133,6 +152,8 @@ POST /content/save-to-bitable
 ```json
 { "saved_content_id": 5 }
 ```
+传 `saved_content_id` 时，服务端自动从关联资讯中读取 `news_title`、`news_source_url`、`news_pub_date`（资讯原始发布日期），飞书归档将按资讯发布日期而非当天日期写入。
+
 请求体（方式二，直接传数据）：
 ```json
 {
@@ -141,6 +162,7 @@ POST /content/save-to-bitable
   "source_url": "https://...",
   "news_title": "原始资讯标题",
   "news_source_url": "原始资讯链接",
+  "news_pub_date": "2026-03-17T10:00:00.000Z",
   "tags": "AI,工具",
   "cover_url": "/uploads/rendered/xxx_cover.png",
   "detail_urls": ["/uploads/rendered/xxx_detail_0.png"]

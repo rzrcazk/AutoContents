@@ -11,7 +11,15 @@ services:
       NODE_ENV: production
       PORT: 3710
       RSSHUB_URL: 'http://rsshub:1200'
+      # 数据库驱动：sqlite（默认）或 postgres
+      DB_DRIVER: sqlite
       DB_PATH: /app/data/app.db
+      # 切换 PostgreSQL 时取消注释以下配置，并将 DB_DRIVER 改为 postgres
+      # PGHOST: postgres
+      # PGPORT: 5432
+      # PGDATABASE: autocontents
+      # PGUSER: postgres
+      # PGPASSWORD: your_password
       RENDER_OUTPUT_DIR: /app/uploads/rendered
       # 容器内 Chromium 路径（Debian/Ubuntu apt 安装位置）
       CHROME_PATH: /usr/bin/chromium
