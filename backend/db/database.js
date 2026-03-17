@@ -67,8 +67,20 @@ if (DB_DRIVER === 'postgres') {
         },
         run: async (...params) => {
           try {
-            // 转换 INSERT OR REPLACE 为 INSERT ... ON CONFLICT
+            // 转换 INSERT OR IGNORE 为 INSERT ... ON CONFLICT DO NOTHING
             let runSql = pgSql;
+            if (runSql.includes('INSERT OR IGNORE INTO')) {
+              runSql = runSql.replace('INSERT OR IGNORE INTO', 'INSERT INTO');
+              // 根据表名确定冲突列
+              const tableMatch = runSql.match(/INSERT INTO\s+(\w+)/i);
+              const tableName = tableMatch ? tableMatch[1] : '';
+              if (tableName === 'news') {
+                runSql += ' ON CONFLICT (guid) DO NOTHING';
+              } else {
+                runSql += ' ON CONFLICT DO NOTHING';
+              }
+            }
+            // 转换 INSERT OR REPLACE 为 INSERT ... ON CONFLICT
             if (runSql.includes('INSERT OR REPLACE INTO')) {
               runSql = runSql.replace('INSERT OR REPLACE INTO', 'INSERT INTO');
               runSql = runSql.replace(/ON CONFLICT.*DO UPDATE SET.*$/i, '');
