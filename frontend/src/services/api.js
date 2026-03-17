@@ -31,9 +31,9 @@ export const newsAPI = {
   hide: (id) => api.post(`/news/${id}/hide`),
   save: (id) => api.post(`/news/${id}/save`),
   unsave: (id) => api.post(`/news/${id}/unsave`),
-  ainews: (id) => api.post(`/news/${id}/ainews`),
-  aitopics: (id) => api.post(`/news/${id}/aitopics`),
-  aitools: (id) => api.post(`/news/${id}/aitools`),
+  ainews: (id, data) => api.post(`/news/${id}/ainews`, data),
+  aitopics: (id, data) => api.post(`/news/${id}/aitopics`, data),
+  aitools: (id, data) => api.post(`/news/${id}/aitools`, data),
   detail: (id) => api.get(`/news/${id}`),
 };
 

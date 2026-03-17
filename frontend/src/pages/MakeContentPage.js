@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { contentAPI } from '../services/api';
+import { contentAPI, newsAPI } from '../services/api';
 import { useToast } from '../components/Toast';
 import './MakeContentPage.css';
 
@@ -345,6 +345,7 @@ export default function MakeContentPage() {
         source_url: initialData.link || '',
         news_title: initialData.title || '',
         news_source_url: initialData.link || '',
+        news_pub_date: initialData.pub_date,
       });
       toast.success('已保存到飞书多维表！');
     } catch (e) {
@@ -378,8 +379,125 @@ export default function MakeContentPage() {
     }
   };
 
+  // 推送相关状态
+  const [pushing, setPushing] = useState(false);
+  const [pushType, setPushType] = useState(null);
+  const [showPushModal, setShowPushModal] = useState(false);
+  const [pushForm, setPushForm] = useState({ news_title: '', news_summary: '' });
+
+  const openPushModal = (type) => {
+    if (!initialData.id) {
+      toast.error('无法推送：缺少资讯来源');
+      return;
+    }
+    setPushType(type);
+    // 预填充标题和摘要
+    const title = editContent?.title || initialData.title || '';
+    const summary = editContent?.content
+      ? editContent.content.substring(0, 200) + (editContent.content.length > 200 ? '…' : '')
+      : initialData.description
+        ? initialData.description.substring(0, 200) + (initialData.description.length > 200 ? '…' : '')
+        : '';
+    setPushForm({
+      news_title: title.length > 30 ? title.substring(0, 30) : title,
+      news_summary: summary,
+    });
+    setShowPushModal(true);
+  };
+
+  const handlePush = async () => {
+    if (!pushType || !initialData.id) {
+      toast.error('缺少资讯ID，无法推送');
+      return;
+    }
+    setPushing(true);
+    try {
+      const apiMap = {
+        ainews: newsAPI.ainews,
+        aitopics: newsAPI.aitopics,
+        aitools: newsAPI.aitools,
+      };
+      const resp = await apiMap[pushType](initialData.id, {
+        news_title: pushForm.news_title,
+        news_summary: pushForm.news_summary,
+      });
+      if (resp.data.success) {
+        toast.success(`${getPushTypeLabel(pushType)} 推送成功！`);
+        setShowPushModal(false);
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.error || '推送失败');
+    } finally {
+      setPushing(false);
+    }
+  };
+
   const updateEdit = (key) => (val) => {
     setEditContent((prev) => ({ ...prev, [key]: val }));
+  };
+
+  // 获取推送类型标签
+  const getPushTypeLabel = (type) => {
+    const labels = { ainews: '资讯速报', aitopics: '话题讨论', aitools: '工具推荐' };
+    return labels[type] || type;
+  };
+
+  // 推送弹窗组件
+  const PushModal = () => {
+    if (!showPushModal) return null;
+    return (
+      <div className="modal-overlay" onClick={() => setShowPushModal(false)}>
+        <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-header">
+            <h3>推送内容编辑</h3>
+            <button className="modal-close" onClick={() => setShowPushModal(false)}>✕</button>
+          </div>
+          <div className="modal-body">
+            <div className="push-type-badge">{getPushTypeLabel(pushType)}</div>
+            <div className="form-group">
+              <label>推送标题（≤30字）</label>
+              <input
+                type="text"
+                value={pushForm.news_title}
+                onChange={(e) => setPushForm({ ...pushForm, news_title: e.target.value })}
+                placeholder="输入推送标题"
+                maxLength={30}
+              />
+              <span className="char-count">{pushForm.news_title.length}/30</span>
+            </div>
+            <div className="form-group">
+              <label>推送摘要（100-200字）</label>
+              <textarea
+                value={pushForm.news_summary}
+                onChange={(e) => setPushForm({ ...pushForm, news_summary: e.target.value })}
+                placeholder="输入推送摘要内容"
+                rows={5}
+              />
+              <span className="char-count">{pushForm.news_summary.length}字</span>
+            </div>
+          </div>
+          <div className="modal-footer">
+            <button className="btn btn-ghost" onClick={() => setShowPushModal(false)}>
+              取消
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={handlePush}
+              disabled={pushing || !pushForm.news_title || !pushForm.news_summary}
+            >
+              {pushing ? (
+                <>
+                  <span className="spinner" style={{ width: 14, height: 14 }} />
+                  推送中…
+                </>
+              ) : (
+                '✓ 确认推送'
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -572,6 +690,35 @@ export default function MakeContentPage() {
                     {savingBitable ? <span className="spinner" style={{ width: 14, height: 14 }} /> : '⊞'}
                     {savingBitable ? ' 同步中…' : ' 存入多维表'}
                   </button>
+                  <div className="action-divider" />
+                  <button
+                    className="btn btn-push btn-push-news"
+                    onClick={() => openPushModal('ainews')}
+                    disabled={pushing}
+                    title="推送到 AINews（资讯速报）"
+                  >
+                    {pushing && pushType === 'ainews' ? <span className="spinner" style={{ width: 14, height: 14 }} /> : '◈'}
+                    {pushing && pushType === 'ainews' ? ' 推送中…' : ' AINews'}
+                  </button>
+                  <button
+                    className="btn btn-push btn-push-topics"
+                    onClick={() => openPushModal('aitopics')}
+                    disabled={pushing}
+                    title="推送到 AITopics（话题讨论）"
+                  >
+                    {pushing && pushType === 'aitopics' ? <span className="spinner" style={{ width: 14, height: 14 }} /> : '◉'}
+                    {pushing && pushType === 'aitopics' ? ' 推送中…' : ' AITopics'}
+                  </button>
+                  <button
+                    className="btn btn-push btn-push-tools"
+                    onClick={() => openPushModal('aitools')}
+                    disabled={pushing}
+                    title="推送到 AITools（工具推荐）"
+                  >
+                    {pushing && pushType === 'aitools' ? <span className="spinner" style={{ width: 14, height: 14 }} /> : '⚒'}
+                    {pushing && pushType === 'aitools' ? ' 推送中…' : ' AITools'}
+                  </button>
+                  <div className="action-divider" />
                   <button
                     className="btn btn-xhs"
                     onClick={handlePublishXhs}
@@ -594,6 +741,7 @@ export default function MakeContentPage() {
           )}
         </div>
       </div>
+      <PushModal />
     </div>
   );
 }

@@ -295,8 +295,13 @@ async function doPush(id, type, overrideContent) {
 
   const [wechatResult, feishuResult] = await Promise.allSettled([
     pushAINews(newsTitle, newsSummary, tag),
-    saveNewsToFeishu(newsTitle, newsSummary, sourceUrl, feishuEmoji),
+    saveNewsToFeishu(newsTitle, newsSummary, sourceUrl, feishuEmoji, item.pub_date),
   ]);
+
+  // 检查飞书推送结果，失败则抛出错误
+  if (feishuResult.status === 'rejected') {
+    throw new Error(`飞书推送失败: ${feishuResult.reason?.message || '未知错误'}`);
+  }
 
   await db.prepare(`
     UPDATE news SET ai_newsed = 1, saved = 1, saved_at = datetime('now'), push_type = ?
@@ -308,7 +313,7 @@ async function doPush(id, type, overrideContent) {
     news_title: newsTitle,
     news_summary: newsSummary,
     wechat: wechatResult.status === 'fulfilled' ? wechatResult.value : { error: wechatResult.reason?.message },
-    feishu: feishuResult.status === 'fulfilled' ? feishuResult.value : { error: feishuResult.reason?.message },
+    feishu: feishuResult.value,
   };
 }
 
