@@ -314,9 +314,11 @@ export default function HomePage() {
   const handleMakeContent = (item) => {
     navigate('/make-content', {
       state: {
+        id: item.id,
         title: item.translated_title || item.title,
         description: item.translated_description || item.description,
         link: item.link,
+        pub_date: item.pub_date,
       },
     });
   };

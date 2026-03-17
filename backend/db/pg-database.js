@@ -188,6 +188,26 @@ async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_news_source_id ON news(source_id);
     CREATE INDEX IF NOT EXISTS idx_news_hidden ON news(hidden);
     CREATE INDEX IF NOT EXISTS idx_news_fetched_at ON news(fetched_at);
+
+    -- 性能优化索引（PostgreSQL）
+    -- 资讯列表查询优化：按发布时间倒序是最常见查询模式
+    CREATE INDEX IF NOT EXISTS idx_news_pub_date ON news(pub_date DESC);
+
+    -- 复合索引：信源+隐藏+发布时间（分组查询核心路径）
+    CREATE INDEX IF NOT EXISTS idx_news_source_hidden_pub ON news(source_id, hidden, pub_date DESC);
+
+    -- 复合索引：隐藏+发布时间（首页列表查询）
+    CREATE INDEX IF NOT EXISTS idx_news_hidden_pub ON news(hidden, pub_date DESC);
+
+    -- saved 查询优化
+    CREATE INDEX IF NOT EXISTS idx_news_saved_at ON news(saved, saved_at DESC);
+
+    -- Agent 模式查询优化
+    CREATE INDEX IF NOT EXISTS idx_news_ai_newsed ON news(ai_newsed) WHERE ai_newsed = false;
+
+    -- saved_contents 外键和排序优化
+    CREATE INDEX IF NOT EXISTS idx_saved_contents_news_id ON saved_contents(news_id);
+    CREATE INDEX IF NOT EXISTS idx_saved_contents_created ON saved_contents(created_at DESC);
   `;
 
   await exec(initSQL);

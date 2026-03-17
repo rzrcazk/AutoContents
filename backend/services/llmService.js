@@ -19,22 +19,30 @@ async function callLLMWithOverride({ model, baseUrl, apiKey, sysPrompt }, userCo
   const body = { model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userContent }], temperature: 0.7 };
   if (schema) body.response_format = { type: 'json_object' };
 
-  const resp = await axios.post(url, body, {
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    timeout: 60000,
-  });
+  try {
+    const resp = await axios.post(url, body, {
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      timeout: 60000,
+    });
 
-  const content = resp.data.choices[0].message.content;
-  if (schema) {
-    try {
-      return JSON.parse(content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim());
-    } catch { return content; }
+    const content = resp.data.choices[0].message.content;
+    if (schema) {
+      try {
+        return JSON.parse(content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim());
+      } catch { return content; }
+    }
+    return content;
+  } catch (err) {
+    if (err.response) {
+      const detail = JSON.stringify(err.response.data);
+      throw new Error(`LLM API 请求失败 [${err.response.status}]: ${detail}`);
+    }
+    throw err;
   }
-  return content;
 }
 
 async function callLLM(type, userContent, schema = null) {
-  const { model, baseUrl, apiKey, sysPrompt } = getLLMConfig(type);
+  const { model, baseUrl, apiKey, sysPrompt } = await getLLMConfig(type);
 
   if (!apiKey || !model) {
     throw new Error(`LLM 配置不完整：${type} 模型未配置 API Key 或模型名称`);
@@ -69,25 +77,33 @@ async function callLLM(type, userContent, schema = null) {
     body.response_format = { type: 'json_object' };
   }
 
-  const resp = await axios.post(url, body, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    timeout: 60000,
-  });
+  try {
+    const resp = await axios.post(url, body, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 60000,
+    });
 
-  const content = resp.data.choices[0].message.content;
-  if (schema) {
-    try {
-      // 去掉可能包裹的 markdown 代码块
-      const cleaned = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-      return JSON.parse(cleaned);
-    } catch {
-      return content;
+    const content = resp.data.choices[0].message.content;
+    if (schema) {
+      try {
+        // 去掉可能包裹的 markdown 代码块
+        const cleaned = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+        return JSON.parse(cleaned);
+      } catch {
+        return content;
+      }
     }
+    return content;
+  } catch (err) {
+    if (err.response) {
+      const detail = JSON.stringify(err.response.data);
+      throw new Error(`LLM API 请求失败 [${err.response.status}]: ${detail}`);
+    }
+    throw err;
   }
-  return content;
 }
 
 // 翻译文本
@@ -117,8 +133,8 @@ async function formatNewsForAINews(title, description) {
 
 // 格式化新闻（AITopics：引导讨论型）
 async function formatNewsForAITopics(title, description) {
-  const { model, baseUrl, apiKey } = getLLMConfig('edit');
-  const { sysPrompt } = getLLMConfig('aitopics');
+  const { model, baseUrl, apiKey } = await getLLMConfig('edit');
+  const { sysPrompt } = await getLLMConfig('aitopics');
 
   const prompt = `标题：${title}\n内容：${description}`;
 
@@ -138,8 +154,8 @@ async function formatNewsForAITopics(title, description) {
 
 // 格式化新闻（AITools：工具推荐型）
 async function formatNewsForAITools(title, description) {
-  const { model, baseUrl, apiKey } = getLLMConfig('edit');
-  const { sysPrompt } = getLLMConfig('aitools');
+  const { model, baseUrl, apiKey } = await getLLMConfig('edit');
+  const { sysPrompt } = await getLLMConfig('aitools');
 
   const prompt = `标题：${title}\n内容：${description}`;
 

@@ -25,15 +25,25 @@ if (DB_DRIVER === 'postgres') {
     prepare: (sql) => {
       // 转换 SQLite 参数占位符 ? 为 PostgreSQL $1, $2...
       let pgSql = sql;
+
+      // 转换 SQLite 函数为 PostgreSQL（必须在转换 ? 为 $1 之前处理）
+      pgSql = pgSql.replace(/datetime\('now'\)/gi, 'CURRENT_TIMESTAMP');
+      // 转换 datetime(?, '-1 day') 为 ?::timestamp - interval '1 day'
+      pgSql = pgSql.replace(/datetime\(\?\s*,\s*['"]([-+])?(\d+)\s+day['"]\s*\)/gi, (match, sign, days) => {
+        const operator = sign === '-' || !sign ? '-' : '+';
+        return `?::timestamp ${operator} interval '${days} day'`;
+      });
+      // 转换布尔值比较：= 1 改为 = true, = 0 改为 = false
+      pgSql = pgSql.replace(/=\s*1(?![0-9])/g, '= true');
+      pgSql = pgSql.replace(/=\s*0/g, '= false');
+      pgSql = pgSql.replace(/INTEGER PRIMARY KEY AUTOINCREMENT/gi, 'SERIAL PRIMARY KEY');
+
+      // 最后转换 ? 为 $1, $2...
       let paramIndex = 0;
       pgSql = pgSql.replace(/\?/g, () => `$${++paramIndex}`);
 
-      // 转换 SQLite 函数为 PostgreSQL
-      pgSql = pgSql.replace(/datetime\('now'\)/gi, 'CURRENT_TIMESTAMP');
-      pgSql = pgSql.replace(/INTEGER PRIMARY KEY AUTOINCREMENT/gi, 'SERIAL PRIMARY KEY');
-
       return {
-        all: async (params) => {
+        all: async (...params) => {
           try {
             // 转换布尔值参数为 PostgreSQL 格式
             const convertedParams = convertParams(params);
@@ -45,7 +55,7 @@ if (DB_DRIVER === 'postgres') {
             throw err;
           }
         },
-        get: async (params) => {
+        get: async (...params) => {
           try {
             const convertedParams = convertParams(params);
             const row = await pgDb.get(pgSql, convertedParams);
@@ -55,17 +65,29 @@ if (DB_DRIVER === 'postgres') {
             throw err;
           }
         },
-        run: async (params) => {
+        run: async (...params) => {
           try {
             // 转换 INSERT OR REPLACE 为 INSERT ... ON CONFLICT
             let runSql = pgSql;
             if (runSql.includes('INSERT OR REPLACE INTO')) {
               runSql = runSql.replace('INSERT OR REPLACE INTO', 'INSERT INTO');
               runSql = runSql.replace(/ON CONFLICT.*DO UPDATE SET.*$/i, '');
-              runSql = runSql.trim() + ' ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value';
+              runSql = runSql.trim();
+              // 根据表名确定冲突列和更新语句
+              const tableMatch = runSql.match(/INSERT INTO\s+(\w+)/i);
+              const tableName = tableMatch ? tableMatch[1] : '';
+              if (tableName === 'feishu_daily_docs') {
+                runSql += ' ON CONFLICT (date) DO UPDATE SET node_token = EXCLUDED.node_token, obj_token = EXCLUDED.obj_token';
+              } else {
+                // 默认为 config 表（key-value 结构）
+                runSql += ' ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value';
+              }
             }
-            // 添加 RETURNING id 支持获取 lastInsertRowid
-            if (runSql.includes('INSERT INTO') && !runSql.includes('RETURNING')) {
+            // 添加 RETURNING id 支持获取 lastInsertRowid（config 表和无 id 列的表除外）
+            const noIdTables = ['config', 'feishu_daily_docs'];
+            const insertTableMatch = runSql.match(/INSERT INTO\s+(\w+)/i);
+            const insertTableName = insertTableMatch ? insertTableMatch[1] : '';
+            if (runSql.includes('INSERT INTO') && !runSql.includes('RETURNING') && !noIdTables.includes(insertTableName)) {
               runSql += ' RETURNING id';
             }
             const convertedParams = convertParams(params);

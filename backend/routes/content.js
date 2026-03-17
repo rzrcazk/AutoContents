@@ -267,6 +267,7 @@ router.post('/save-to-bitable', async (req, res) => {
         if (newsRow) {
           data.news_title = newsRow.translated_title || newsRow.title;
           data.news_source_url = newsRow.link || data.source_url;
+          data.news_pub_date = newsRow.pub_date;
         }
       }
     }
