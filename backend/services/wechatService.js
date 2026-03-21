@@ -82,7 +82,7 @@ async function pushAINews(newsTitle, newsSummary, tag = '#AINews') {
  * 支持纯文本消息
  */
 async function notifyFeishuBot(message) {
-  const webhook = getConfig('feishu_bot_webhook');
+  const webhook = await getConfig('feishu_bot_webhook');
   if (!webhook) throw new Error('未配置飞书机器人 Webhook 地址');
 
   const resp = await axios.post(webhook, {
